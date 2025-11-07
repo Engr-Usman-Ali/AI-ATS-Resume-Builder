@@ -4,6 +4,12 @@ import json
 from google import genai
 from google.genai.errors import APIError
 from google.genai.types import Schema, Type
+from app.services.gemini_service import GeminiService
+from app.config.firebase_config import verify_token
+import base64
+import PyPDF2
+import io
+import docx
 
 # ----------------------------------------------------
 # 1. Blueprint Setup and Initialization
@@ -213,4 +219,135 @@ def optimize_resume():
         return jsonify({"success": False, "message": "AI returned an unparsable response."}), 500
     except Exception as e:
         print(f"🚨 An unexpected internal server error occurred (optimize): {e}")
+        return jsonify({"success": False, "message": f"An unexpected server error occurred: {e}"}), 500
+
+# ----------------------------------------------------
+# 5. /resume anlyzer
+# ----------------------------------------------------
+
+# ai_routes.py - Add this under Section 2. Structured Response Schemas
+
+# Schema for ATS Score and Tips (Requires JD comparison)
+ATS_SCORE_SCHEMA_DICT = {
+    "type": "OBJECT",
+    "properties": {
+        "score": {"type": "NUMBER", "description": "The ATS match score (0-100) based on the Job Description."},
+        "tips": {
+            "type": "ARRAY", 
+            "description": "Exactly 5 specific, actionable improvement tips focused on JD match and ATS compatibility.", 
+            "items": {"type": "STRING"}
+        },
+        "breakdown": {"type": "STRING", "description": "A concise explanation of the score based on keyword match, formatting, and completeness."}
+    },
+    "required": ["score", "tips", "breakdown"]
+}
+
+# ai_routes.py - Update Section 5. /resume analyzer
+
+# ----------------------------------------------------
+# 5. /analyze-resume Endpoint (ATS Score against JD)
+# ----------------------------------------------------
+
+@ai_bp.route('/analyze-resume', methods=['POST'])
+def analyze_resume():
+    """
+    Analyzes uploaded resume text for ATS score against a Job Description (JD) 
+    and provides improvement tips.
+    """
+    if not ai_client:
+        return jsonify({"success": False, "message": "AI service not initialized. Check server logs."}), 503
+    
+    try:
+        data = request.json
+        
+        # --- Check for both file data and Job Description ---
+        if not data or 'base64Data' not in data or 'mimeType' not in data or 'jobDescription' not in data:
+            return jsonify({
+                'success': False,
+                'message': 'Missing required fields: base64Data, mimeType, and jobDescription are all required.'
+            }), 400
+        
+        base64_data = data['base64Data']
+        mime_type = data['mimeType']
+        job_description = data['jobDescription'].strip()
+        
+        # Ensure JD is provided
+        if not job_description:
+             return jsonify({
+                'success': False,
+                'message': 'Job Description text cannot be empty for ATS analysis.'
+            }), 400
+
+        # Decode base64 to bytes (file extraction logic remains the same)
+        try:
+            file_bytes = base64.b64decode(base64_data)
+        except Exception:
+            return jsonify({
+                'success': False,
+                'message': 'Invalid base64 data provided.'
+            }), 400
+        
+        # --- Extract text based on file type (PDF/DOCX) ---
+        resume_text = ''
+        if mime_type == 'application/pdf':
+            # Extract text from PDF (PyPDF2 logic)
+            pdf_file = io.BytesIO(file_bytes)
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            for page in pdf_reader.pages:
+                resume_text += page.extract_text() + '\n'
+        
+        elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+            # Extract text from DOCX (docx logic)
+            docx_file = io.BytesIO(file_bytes)
+            doc = docx.Document(docx_file)
+            for paragraph in doc.paragraphs:
+                resume_text += paragraph.text + '\n'
+        
+        else:
+            return jsonify({'success': False, 'message': 'Unsupported file type. Only PDF and DOCX are supported'}), 400
+        
+        # Final check on extracted text
+        if not resume_text.strip():
+            return jsonify({'success': False, 'message': 'Could not extract readable text from the file.'}), 400
+        
+        # --- Call Gemini AI for ATS Analysis (New Logic) ---
+        system_prompt = (
+            "You are an expert ATS (Applicant Tracking System) reviewer. Your primary goal is to determine the "
+            "match score (0-100) between the RESUME and the JOB DESCRIPTION. Base the score on keyword frequency, "
+            "skill alignment, formatting for parsing, and quantifiable achievements. "
+            "You MUST return a single JSON object that strictly adheres to the provided schema."
+        )
+        user_prompt = (
+            f"Analyze the following resume against the job description for ATS compatibility.\n\n"
+            f"--- JOB DESCRIPTION ---\n{job_description}\n\n"
+            f"--- RESUME TEXT ---\n{resume_text}"
+        )
+        
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[system_prompt, user_prompt],
+            config={
+                'response_mime_type': "application/json",
+                'response_schema': Schema(**ATS_SCORE_SCHEMA_DICT)
+            }
+        )
+        
+        # --- Process AI Response ---
+        result = json.loads(response.text.strip())
+        
+        return jsonify({
+            'success': True,
+            'score': result.get('score'),
+            'tips': result.get('tips'),
+            'breakdown': result.get('breakdown')
+        }), 200
+    
+    except APIError as e:
+        print(f"🚨 Gemini API Error (analyze_resume): {e}")
+        return jsonify({"success": False, "message": "AI service failed. Check server logs."}), 500
+    except json.JSONDecodeError as e:
+        print(f"🚨 Error parsing AI response to JSON (analyze_resume): {e}. Raw response: {response.text}")
+        return jsonify({"success": False, "message": "AI returned an unparsable response."}), 500
+    except Exception as e:
+        print(f"🚨 An unexpected internal server error occurred (analyze_resume): {e}")
         return jsonify({"success": False, "message": f"An unexpected server error occurred: {e}"}), 500
