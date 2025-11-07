@@ -21,7 +21,7 @@ An AI-powered web application that helps users create, analyze, and optimize pro
 ### 🧾 3. Resume Builder Dashboard
 > The main workspace where users create, edit, and optimize their resumes using AI.
 
-![Dashboard](3.png)
+![Dashboard](3.jpg)
 
 ---
 
@@ -30,6 +30,12 @@ An AI-powered web application that helps users create, analyze, and optimize pro
 
 ![Resume Page](4.png)
 
+---
+
+### 📄 5. ATS Score Page
+> Optimize your resume for Applicant Tracking Systems (ATS) with AI-powered feedback and suggestions.
+
+![ATS SCORE Page](5.jpg)
 
 
 <br>
